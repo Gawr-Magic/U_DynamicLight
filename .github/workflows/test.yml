@@ -60,12 +60,7 @@ jobs:
     name: Publish verified release
     needs: [build, test]
     runs-on: ubuntu-latest
-    if: >-
-      github.repository == 'ReallocAll/U_DynamicLight' &&
-      (startsWith(github.ref, 'refs/tags/v') ||
-       (github.event_name == 'push' && github.ref == 'refs/heads/master' &&
-        github.event.before == 'a0c68a9464d7ccea36fd1a63dbdd7a49995ba985' &&
-        github.event.head_commit.message == 'Release U-DynamicLight 260522.post1'))
+    if: github.repository == 'ReallocAll/U_DynamicLight' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -96,18 +91,8 @@ jobs:
           assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == sha
           version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
           tag = f'v{version}'
-          if os.environ['REF_TYPE'] == 'tag':
-              assert os.environ['REF_NAME'] == tag, (os.environ['REF_NAME'], tag)
-          else:
-              assert os.environ['REF_NAME'] == 'master'
-              assert version == '260522.post1', version
-              parent = subprocess.check_output(['git', 'log', '-1', '--format=%P'], text=True).strip()
-              assert parent == 'a0c68a9464d7ccea36fd1a63dbdd7a49995ba985', parent
-              import json
-              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-              assert event['before'] == 'a0c68a9464d7ccea36fd1a63dbdd7a49995ba985'
-              assert event['after'] == sha
-              assert event['head_commit']['message'] == 'Release U-DynamicLight 260522.post1'
+          assert os.environ['REF_TYPE'] == 'tag'
+          assert os.environ['REF_NAME'] == tag, (os.environ['REF_NAME'], tag)
           refs = subprocess.check_output(
               ['git', 'ls-remote', '--tags', 'origin', f'refs/tags/{tag}', f'refs/tags/{tag}^{{}}'], text=True)
           targets = {ref: commit for commit, ref in (line.split() for line in refs.splitlines())}
