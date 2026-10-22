@@ -22,8 +22,12 @@
 <details>
 <summary>Check your Endstone's version</summary>
 
-* **Endstone 0.10.0 - unknown version**
-  * 260522
+* **This fork: Endstone API 0.11 / Bedrock protocol 944+ (1.26.14+)**
+  * [260522.post1](https://github.com/ReallocAll/U_DynamicLight/releases/tag/v260522.post1)
+  * Python 3.11–3.15; universal `py3-none-any` wheel
+  * Real client/server rendering still requires the [in-game checklist](docs/dynamic-light-verification.md).
+* **Upstream 260522**
+  * Endstone API 0.11
 * **Endstone 0.10.0 - unknown version**
   * 251221 (Bedrock Edition 1.21.111+)
   * 250813

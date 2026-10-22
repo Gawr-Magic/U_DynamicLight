@@ -38,7 +38,7 @@ the same coordinate have independent client state.
 
 ## Automated verification
 
-From the repository root, with Python 3.12:
+From the repository root, with Python 3.11–3.15:
 
 ```sh
 python -m pip install . build
@@ -49,12 +49,16 @@ python -m build
 
 The tests call the actual plugin methods and form/event callbacks through a small
 Endstone API double. Packet serialization uses the real `mcbe-binarystream`
-dependency, including a byte-level golden for a negative-height signed position.
+2.1.0 dependency, including a byte-level golden for a negative-height signed position.
 They cover two players with one stationary, tall/short vegetation, water, bounded
 search and solid barriers, brightness changes, coincident self-only sources,
 current-state restoration, dimension/quit/rejoin/disable cleanup, refresh interval
-saving/rescheduling, failed-save/scheduling retries, and invalid form input. CI runs these checks and builds the
-wheel and source distribution.
+saving/rescheduling, failed-save/scheduling retries, and invalid form input. CI builds one universal wheel and source distribution, then installs that exact
+wheel and its real dependency on Python 3.11, 3.12, 3.13, 3.14, and 3.15 to run
+the same 30 tests. The release is blocked unless every matrix entry passes.
+The package declares `>=3.11,<3.16` and pins `mcbe-binarystream==2.1.0` to the
+verified serializer version. This Python matrix does not establish that every
+Endstone binary distribution embeds each supported Python version.
 
 ## Compatibility and remaining in-game checks
 

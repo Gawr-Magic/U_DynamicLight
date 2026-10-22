@@ -4,10 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone-u-dynamic-light"
-version = "260522"
+version = "260522.post1"
+requires-python = ">=3.11,<3.16"
 description = "Light on!!!"
 dependencies = [
-    "mcbe-binarystream"
+    "mcbe-binarystream==2.1.0"
 ]
 
 [project.entry-points."endstone"]
