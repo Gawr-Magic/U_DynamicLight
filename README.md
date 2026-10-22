@@ -54,6 +54,13 @@
 
 ***
 
+### 🧪 Dynamic-light fixes and verification
+
+See [behavior, compatibility, test commands, and in-game checklist](docs/dynamic-light-verification.md)
+for the bounded light-update refactor in this fork.
+
+***
+
 ### 📄 File structure
 ```
 plugins/

@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import tempfile
 
 from binarystream import BinaryStream
 
@@ -13,6 +14,9 @@ from endstone.level import Dimension
 from endstone.form import ModalForm, Toggle, TextInput
 from endstone.inventory import ItemStack
 from endstone.command import Command, CommandSender
+from endstone.event import (
+    event_handler, PlayerJoinEvent, PlayerQuitEvent, PlayerDimensionChangeEvent
+)
 
 current_dir = os.getcwd()
 
@@ -31,6 +35,27 @@ if not os.path.exists(lang_dir):
 
 class u_dynamic_light(Plugin):
     api_version = "0.11"
+
+    # The API has no collision/passability query. Only traverse these known
+    # non-solid blocks; the fake light itself must always occupy real air.
+    _LIGHT_SEARCH_PASS_THROUGH = frozenset({
+        "minecraft:tallgrass", "minecraft:double_plant",  # Legacy block IDs
+        "minecraft:short_grass", "minecraft:tall_grass",
+        "minecraft:fern", "minecraft:large_fern",
+        "minecraft:short_dry_grass", "minecraft:tall_dry_grass",
+        "minecraft:sunflower", "minecraft:lilac", "minecraft:rose_bush",
+        "minecraft:peony", "minecraft:vine", "minecraft:glow_lichen",
+        "minecraft:seagrass", "minecraft:kelp", "minecraft:kelp_plant",
+        "minecraft:water", "minecraft:flowing_water", "minecraft:bubble_column",
+    })
+    # Head first, then up (at most two cells), horizontal neighbours, and feet.
+    # Stop each ray at an unknown/solid block. At most eight block reads.
+    _LIGHT_SEARCH_RAYS = (
+        ((0, 1, 0), (0, 2, 0)),
+        ((1, 0, 0),), ((-1, 0, 0),),
+        ((0, 0, 1),), ((0, 0, -1),), ((0, -1, 0),),
+    )
+    _LIGHT_REAPPLY_TICKS = 20
 
     def __init__(self):
         super().__init__()
@@ -164,14 +189,46 @@ class u_dynamic_light(Plugin):
         self.may_glowing_item_type_id_list = [key for key in self.may_glowing_item_type_id_dict.keys()]
 
         self.recorder = {}
+        self._light_runtime_ids = {}
+        self._light_tick = 0
+        self._light_task = None
 
     def on_enable(self):
-        self.server.scheduler.run_task(self, self.light_manage, delay=0, period=self.config_data["refresh_tick"])
+        self.register_events(self)
+        self._light_task = self._schedule_light_task(self.config_data["refresh_tick"])
 
         self.logger.info(
             f"{ColorFormat.YELLOW}"
             f"U-DynamicLight is enabled..."
         )
+
+    def _schedule_light_task(self, refresh_tick: int):
+        return self.server.scheduler.run_task(
+            self, self.light_manage, delay=0, period=refresh_tick
+        )
+
+    def on_disable(self):
+        if self._light_task is not None:
+            self._light_task.cancel()
+            self._light_task = None
+        for player in self.server.online_players:
+            self.light_off(player)
+        self.recorder.clear()
+        self._light_runtime_ids.clear()
+
+    @event_handler
+    def on_player_join(self, event: PlayerJoinEvent):
+        self.recorder.pop(event.player.name, None)
+
+    @event_handler
+    def on_player_quit(self, event: PlayerQuitEvent):
+        self.recorder.pop(event.player.name, None)
+
+    @event_handler
+    def on_player_dimension_change(self, event: PlayerDimensionChangeEvent):
+        # This event fires after the transition. UpdateBlock has no dimension
+        # field, so restoring an old coordinate here would affect the new world.
+        self.recorder.pop(event.player.name, None)
 
     commands = {
         "offhand": {
@@ -319,34 +376,56 @@ class u_dynamic_light(Plugin):
                 )
 
                 def on_submit(s: Player, json_str: str):
-                    data = json.loads(json_str)
-
                     try:
+                        data = json.loads(json_str)
+                        if not isinstance(data, list) or len(data) != 1 + len(
+                            self.config_data["item_type_id_allow_in_offhand"]
+                        ):
+                            raise ValueError("Invalid form response")
+                        if not isinstance(data[0], str):
+                            raise ValueError("Refresh interval must be an integer")
                         update_refresh_tick = int(data[0])
-                    except:
+                        if not 0 < update_refresh_tick <= 2**64 - 1 or not all(
+                            isinstance(value, bool) for value in data[1:]
+                        ):
+                            raise ValueError("Invalid configuration")
+                    except (ValueError, TypeError):
                         s.send_message(
                             f"{ColorFormat.RED}"
                             f"{self.get_text(s, 'reload.message.fail')}"
                         )
-
                         return
 
-                    if update_refresh_tick <= 0:
+                    candidate = dict(self.config_data)
+                    candidate["refresh_tick"] = update_refresh_tick
+                    candidate["item_type_id_allow_in_offhand"] = dict(zip(
+                        self.config_data["item_type_id_allow_in_offhand"], data[1:]
+                    ))
+                    replacement = None
+                    try:
+                        if update_refresh_tick != self.config_data["refresh_tick"] or self._light_task is None:
+                            # Queue first: a scheduler failure must leave the old
+                            # task running. These callbacks run on the server thread.
+                            replacement = self._schedule_light_task(update_refresh_tick)
+                            if replacement is None:
+                                raise RuntimeError("Could not schedule light updates")
+                        self.save_config_data(candidate)
+                    except (OSError, RuntimeError, ValueError, TypeError, OverflowError) as error:
+                        if replacement is not None:
+                            replacement.cancel()
+                        self.logger.error(f"Could not reload U-DynamicLight configuration: {error}")
                         s.send_message(
                             f"{ColorFormat.RED}"
                             f"{self.get_text(s, 'reload.message.fail')}"
                         )
-
                         return
 
-                    index = 0
-                    update_bool_value_list = data[1:]
-                    for item_type_id in self.config_data['item_type_id_allow_in_offhand'].keys():
-                        self.config_data['item_type_id_allow_in_offhand'][item_type_id] = update_bool_value_list[index]
-
-                        index += 1
-
-                    self.save_config_data()
+                    self.config_data = candidate
+                    if replacement is not None:
+                        previous = self._light_task
+                        self._light_task = replacement
+                        if previous is not None:
+                            previous.cancel()
 
                     s.send_message(
                         f"{ColorFormat.YELLOW}"
@@ -357,162 +436,124 @@ class u_dynamic_light(Plugin):
 
                 sender.send_form(form)
 
-    # Reload configurations
-    def save_config_data(self) -> None:
-        with open(config_data_file_path, "w", encoding="utf-8") as f:
-            json_str = json.dumps(
-                self.config_data,
-                indent=4,
-                ensure_ascii=False
-            )
+    # Persist a staged configuration without changing live state on failure.
+    def save_config_data(self, config_data=None) -> None:
+        if config_data is None:
+            config_data = self.config_data
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=os.path.dirname(config_data_file_path),
+                prefix=".config-", suffix=".tmp", delete=False
+            ) as file:
+                temporary_path = file.name
+                json.dump(config_data, file, indent=4, ensure_ascii=False)
+            # Same-directory replacement leaves the old JSON intact if writing
+            # fails, and readers never see a partially written configuration.
+            os.replace(temporary_path, config_data_file_path)
+        finally:
+            if temporary_path is not None and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
 
-            f.write(json_str)
-
-    def light_on(self, player: Player, pos: list, dim: Dimension, runtime_id:int) -> None:
+    def _send_block(self, player: Player, pos: list, runtime_id: int) -> None:
         bs = BinaryStream()
-        # NetworkBlockPosition
+        # Signed BlockPos (Bedrock protocol 944+, unchanged from this release).
         bs.write_varint(pos[0])
         bs.write_varint(pos[1])
         bs.write_varint(pos[2])
-        # Runtime ID of the fake block
         bs.write_unsigned_varint(runtime_id)
-        # Flags
-        bs.write_unsigned_varint(3)
-        # Layer
-        bs.write_unsigned_varint(0)
+        bs.write_unsigned_varint(3)  # Update neighbours and client rendering
+        bs.write_unsigned_varint(0)  # Main block layer only
+        player.send_packet(21, bs.get_and_release_data())
 
-        bytes = bs.get_and_release_data()
+    def _restore_light(self, player: Player, record: dict) -> None:
+        if player.dimension.name != record["dim"].name:
+            return
+        # Read now, not when the light was placed: a real block may have changed.
+        block = record["dim"].get_block_at(*record["pos"])
+        self._send_block(player, record["pos"], block.data.runtime_id)
 
-        # Send UpdateBlockPacket to the target player
-        player.send_packet(21, bytes)
-
+    def light_on(self, player: Player, pos: list, dim: Dimension, runtime_id: int) -> None:
+        old = self.recorder.get(player.name)
+        # Place the new light first. A brightness-only change must not then
+        # restore the same coordinate, which would erase the replacement.
+        self._send_block(player, pos, runtime_id)
         self.recorder[player.name] = {
             "pos": pos,
             "dim": dim,
-            "runtime_id": runtime_id
+            "runtime_id": runtime_id,
+            "sent_tick": self._light_tick,
         }
+        if old is not None and old["pos"] != pos:
+            self._restore_light(player, old)
 
     def light_off(self, player: Player) -> None:
-        if self.recorder.get(player.name) is None:
-            return
+        old = self.recorder.pop(player.name, None)
+        if old is not None:
+            self._restore_light(player, old)
 
-        pos: list = self.recorder[player.name]["pos"]
-
-        bs = BinaryStream()
-        # NetworkBlockPosition
-        bs.write_varint(pos[0])
-        bs.write_varint(pos[1])
-        bs.write_varint(pos[2])
-        # Runtime ID of minecraft:air
-        air = self.server.create_block_data(
-            "minecraft:air",
-            None
-        )
-        air_runtime_id = air.runtime_id
-        bs.write_unsigned_varint(air_runtime_id)
-        # Flags
-        bs.write_unsigned_varint(3)
-        # Layer
-        bs.write_unsigned_varint(0)
-
-        bytes = bs.get_and_release_data()
-
-        # Send UpdateBlockPacket to the target player
-        player.send_packet(21, bytes)
-
-        self.recorder.pop(player.name)
+    def _find_light_position(self, player: Player):
+        location = player.location
+        head = [math.floor(location.x), math.floor(location.y + 1), math.floor(location.z)]
+        dim = player.dimension
+        block_type = dim.get_block_at(*head).type
+        if block_type == "minecraft:air":
+            return head
+        if block_type not in self._LIGHT_SEARCH_PASS_THROUGH:
+            return None
+        for ray in self._LIGHT_SEARCH_RAYS:
+            for dx, dy, dz in ray:
+                pos = [head[0] + dx, head[1] + dy, head[2] + dz]
+                block_type = dim.get_block_at(*pos).type
+                if block_type == "minecraft:air":
+                    return pos
+                if block_type not in self._LIGHT_SEARCH_PASS_THROUGH:
+                    break
+        return None
 
     def light_manage(self) -> None:
-        if len(self.server.online_players) == 0:
-            return
+        self._light_tick += self.config_data["refresh_tick"]
+        players = list(self.server.online_players)
+        online_names = {player.name for player in players}
+        # Also prune when the server is empty; quit events are the fast path.
+        for name in list(self.recorder):
+            if name not in online_names:
+                self.recorder.pop(name)
 
-        for online_player in self.server.online_players:
-            itemstack_in_main_hand = online_player.inventory.item_in_main_hand
-            itemstack_in_offhand = online_player.inventory.item_in_off_hand
+        for player in players:
+            level = max(
+                self.may_glowing_item_type_id_dict.get(item.type.id, 0)
+                if item is not None else 0
+                for item in (player.inventory.item_in_main_hand, player.inventory.item_in_off_hand)
+            )
+            if level == 0:
+                self.light_off(player)
+                continue
 
-            if (
-                    (
-                        itemstack_in_main_hand is not None
-                        and
-                        itemstack_in_main_hand.type.id in self.may_glowing_item_type_id_list
-                    )
-                    or
-                    itemstack_in_offhand.type.id in self.may_glowing_item_type_id_list
+            pos = self._find_light_position(player)
+            if pos is None:
+                self.light_off(player)
+                continue
+
+            runtime_id = self._light_runtime_ids.get(level)
+            if runtime_id is None:
+                runtime_id = self.server.create_block_data(
+                    "minecraft:light_block_" + str(level), None
+                ).runtime_id
+                self._light_runtime_ids[level] = runtime_id
+
+            old = self.recorder.get(player.name)
+            if old is not None and (
+                old["pos"] == pos
+                and old["dim"].name == player.dimension.name
+                and old["runtime_id"] == runtime_id
+                and self._light_tick - old["sent_tick"] < self._LIGHT_REAPPLY_TICKS
             ):
-                pos = [
-                    math.floor(online_player.location.x),
-                    math.floor(online_player.location.y + 1),
-                    math.floor(online_player.location.z)
-                ]
-                dim = online_player.dimension
-                block = dim.get_block_at(pos[0], pos[1], pos[2])
-
-                if block.type == "minecraft:air":
-                    # In summary, there are four possible cases.
-                    # Case 1: glowing items in main hand & unglowing items in offhand
-                    if (
-                            (
-                                itemstack_in_main_hand is not None
-                                and
-                                itemstack_in_main_hand.type.id in self.may_glowing_item_type_id_list
-                            )
-                            and
-                            itemstack_in_offhand.type.id not in self.may_glowing_item_type_id_list
-                    ):
-                        light_emission_level = self.may_glowing_item_type_id_dict[itemstack_in_main_hand.type.id]
-
-                    # Case 2: nothing in main hand & glowing items in offhand
-                    elif (
-                            itemstack_in_main_hand is None
-                            and
-                            itemstack_in_offhand.type.id in self.may_glowing_item_type_id_list
-                    ):
-                        light_emission_level = self.may_glowing_item_type_id_dict[itemstack_in_offhand.type.id]
-
-                    # Case 3: unglowing items in main hand & glowing items in offhand
-                    elif (
-                            (
-                                itemstack_in_main_hand is not None
-                                and
-                                itemstack_in_main_hand.type.id not in self.may_glowing_item_type_id_list
-                            )
-                            and
-                            itemstack_in_offhand.type.id in self.may_glowing_item_type_id_list
-                    ):
-                        light_emission_level = self.may_glowing_item_type_id_dict[itemstack_in_offhand.type.id]
-
-                    # Case 4: glowing items in main hand & glowing items in offhand
-                    else:
-                        light_emission_level_in_main_hand = self.may_glowing_item_type_id_dict[itemstack_in_main_hand.type.id]
-                        light_emission_level_in_offhand = self.may_glowing_item_type_id_dict[itemstack_in_offhand.type.id]
-                        light_emission_level = max(light_emission_level_in_main_hand, light_emission_level_in_offhand)
-
-                    fake_block_type = "minecraft:light_block_" + str(light_emission_level)
-                    fake_block = self.server.create_block_data(
-                       fake_block_type,
-                        None
-                    )
-                    runtime_id = fake_block.runtime_id
-
-                    # Check whether the player is staying in place and
-                    # -hold the same glowing items, if so, stop sending packets.
-                    if self.recorder.get(online_player.name) is not None:
-                        if not (
-                            pos == self.recorder[online_player.name]["pos"]
-                            and
-                            dim == self.recorder[online_player.name]["dim"]
-                            and
-                            runtime_id == self.recorder[online_player.name]["runtime_id"]
-                        ):
-                            self.light_off(online_player)
-                        else:
-                            return
-
-                    self.light_on(online_player, pos, dim, runtime_id)
-                else:
-                    self.light_off(online_player)
-            else:
-                self.light_off(online_player)
+                # One stationary player must not starve the rest of the loop.
+                continue
+            # An occasional direct reapply recovers from normal chunk/block
+            # packets overwriting the fake light. No clear/recreate cycle.
+            self.light_on(player, pos, player.dimension, runtime_id)
 
     # Get text
     def get_text(self, player: Player, text_key: str) -> str:
