@@ -4,6 +4,7 @@ import json
 
 def load_lang(lang_dir: str) -> dict:
     zh_CN_lang_file_path = os.path.join(lang_dir, 'zh_CN.json')
+    zh_TW_lang_file_path = os.path.join(lang_dir, 'zh_TW.json')
     en_US_lang_file_path = os.path.join(lang_dir, 'en_US.json')
 
     if not os.path.exists(zh_CN_lang_file_path):
@@ -20,6 +21,22 @@ def load_lang(lang_dir: str) -> dict:
         }
         with open(zh_CN_lang_file_path, 'w', encoding='utf-8') as f:
             json_str = json.dumps(zh_CN, indent=4, ensure_ascii=False)
+            f.write(json_str)
+            
+    if not os.path.exists(zh_TW_lang_file_path):
+        zh_TW = {
+            'form.textinput.label': '當前光刷新間隔',
+            'form.textinput.placeholder': '請輸入一個正整數...',
+            'form.submit_button': '重載',
+            'reload.message.fail': '表單解析錯誤, 請按提示正確填寫...',
+            'reload.message.success': '重載設定檔成功...',
+            'switch.message.fail_1': '你的主手上沒有物品...',
+            'switch.message.fail_2': '此物品不能被切換至副手...',
+            'switch.message.fail_3': '以下物品可被切換至副手',
+            'switch.message.success': '將物品切換至副手成功...'
+        }
+        with open(zh_TW_lang_file_path, 'w', encoding='utf-8') as f:
+            json_str = json.dumps(zh_TW, indent=4, ensure_ascii=False)
             f.write(json_str)
 
     if not os.path.exists(en_US_lang_file_path):
