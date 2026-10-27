@@ -72,6 +72,7 @@ plugins/
 │  ├─ config.json
 │  ├─ lang/
 │  │  ├─ zh_CN.json
+│  │  ├─ zh_TW.json
 │  │  ├─ en_US.json
 ```
 
@@ -133,6 +134,7 @@ plugins/
 ### 🌎 Localized multi-language
 * Currently supported localized languages for U-DynamicLight:
 - [x] `zh_CN`
+- [x] `zh_TW`
 - [x] `en_US`
 * How to add more languages to U-DynamicLight? Here we use Japanese for an example.
   * Create a file named `ja_JP.json` and place it into `lang` folder
