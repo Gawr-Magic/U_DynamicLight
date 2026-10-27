@@ -60,7 +60,7 @@ jobs:
     name: Publish verified release
     needs: [build, test]
     runs-on: ubuntu-latest
-    if: github.repository == 'ReallocAll/U_DynamicLight' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'Gawr-Magic/U_DynamicLight' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
